@@ -66,7 +66,8 @@ rule. Where a convention changed, the current rule is stated.
 - Layout: public headers at `__cuco/*.cuh`, implementation under `__cuco/detail/<component>/`.
   Do not `__`-prefix a subdirectory that already lives under a `__` parent (`__cuco/__detail` is
   wrong). A file in `detail/` must not declare public-namespace entities; user-facing template
-  arguments (`conditional_add_mode`, `empty_key`, policies) live in public headers.
+  arguments (`conditional_add_mode`, `empty_key`, policies) live in public headers, with generic
+  tuning-mode names grouped in a struct or namespace to avoid collisions.
   (#7705, #9436, #10740)
 - Do not create a header for a single tiny helper unless several TUs share it. (#11449)
 - **All cudax headers are `.cuh`, including host-only utilities.** cuDF's `.hpp`-means-host-safe
@@ -216,9 +217,12 @@ rule. Where a convention changed, the current rule is stated.
   `__functionSetAttributeNoThrow`, checked by `_CCCL_TRY_DRIVER_API`; do not copy its superseded
   runtime-attribute sketch. (#10740, #11095, #11399, #11391)
 - Use compile-time launch dimensions when values are known (`grid_dims<1>()`,
-  `block_dims<1024>()`). Check template-only local constants for nvcc/MSVC unused-variable
+  `block_dims<1024>()`); infer a constexpr block size from the thread-hierarchy object instead of
+  passing it to the kernel separately. Check template-only local constants for nvcc/MSVC unused-variable
   diagnostics; inline them or use narrowly justified `[[maybe_unused]]`.
   ([#11391 review](https://github.com/NVIDIA/cccl/pull/11391#discussion_r4144993806), merged diff)
+- In probing loops, an overloaded `break` inside nested loops/switches is a known hazard: when
+  it must exit two levels, restructure or accept `goto` rather than add flag variables. (#11975)
 - All `__global__` kernels need `__launch_bounds__`; cast grid size explicitly; no magic warp-size
   numbers. (#7705)
 - Prefer CUB / hierarchy APIs to hand-rolled kernels and index helpers where they are drop-ins
@@ -242,7 +246,11 @@ rule. Where a convention changed, the current rule is stated.
   #9868)
 - Hash-to-index: narrow the hash to the unsigned size type BEFORE `%`, or a 128-bit hasher does a
   128-bit remainder (152 vs 128 instructions, 22 vs 18 regs). Use `cuda::fast_mod_div` only for
-  dynamic extent, precomputed once at construction. (#7705, #11449)
+  dynamic extent, precomputed once at construction. Containers fix the extent to `size_t`, so
+  take/return `size_t`, require an unsigned hash, and `static_assert` the index type in public
+  entry points such as `make_iterator` instead of supporting 32-bit sizes. Keep one code path: a
+  special case for a narrower hash or index type needs a measured win in the real find/insert
+  kernels, not an isolated SASS count. (#7705, #11449, #12360)
 - Shared memory: init smem atomics with `.store(0)`; no `__shared__ T buf[N]` with non-trivial `T`
   (Clang CUDA rejects it) — use `::cuda::__uninitialized_array`; objects in raw smem storage need
   an explicit destroy plus a group sync before rank 0 destroys them. (#6666, #10688, #10693)
@@ -299,7 +307,9 @@ rule. Where a convention changed, the current rule is stated.
   keys (`bit_cast` to `array<byte, N>` gives a single wide load) and keep the
   `memcpy`+`assume_aligned` `__load_chunk` path for dynamic byte spans. (#4898, #5400)
 - Widen before arithmetic: `size_t{n} * 2` / `static_cast<size_t>(a) * 33 + static_cast<size_t>(b)`,
-  never `static_cast<size_t>(n * 2)`; brace-init from the target type instead of casts.
+  never `static_cast<size_t>(n * 2)`; brace-init from the target type instead of casts, and
+  avoid chains of nested `static_cast`s. Use `::cuda::std::__num_bits_v<T>` rather than
+  `numeric_limits<T>::digits` or `sizeof * CHAR_BIT` locals.
   clang-tidy `bugprone-misplaced-widening-cast` errors under `CCCL_ENABLE_WERROR`. (#7705, #9736,
   #10688/#10695 CI)
 - Remove redundant masks/casts (`& 0xFF` on `uint8_t`, `static_cast<T>` of a `T`); uppercase hex
@@ -439,6 +449,10 @@ rule. Where a convention changed, the current rule is stated.
   for an absent key in a full table. Cover the scalar/cooperative, static/dynamic extent, and
   device/block atomic-scope branches exercised by the migrated suite.
   ([#11625 merged tests](https://github.com/NVIDIA/cccl/pull/11625/files))
+- Test oracles must not reimplement the library function or mirror the header's own narrowing
+  rule (that compares the implementation with itself); a few fixed expected values pin a simple
+  mapping, with no patterns x types x bounds sweeps and no re-testing of a utility (`cuda::mul_hi`)
+  that has its own test. (#12360)
 - 128-bit tests guarded by `_CCCL_HAS_INT128()`; expected values from the reference
   implementation; use `_u128` literals from `literal.h`; one `.pass.cpp` per specialization;
   libcu++ `main` runs on both targets, so put bodies in `TEST_FUNC void test()`. Prefer a small
@@ -504,55 +518,3 @@ Not settled by review in NVIDIA/cccl; check them rather than cite them as agreed
   against the readiness flag.
 - **Context guards:** #11391 restores a null caller context in the HLL implementation and tests
   it across iterator types and precisions. Treat it as a landed pattern, not an API recommendation.
-
-## 15. Additions through 2026-11-12
-
-Merged since the previous refresh: #11873 (1D hierarchy queries), #11975 (stop probing in
-`for_each`), #11879 (skip redundant erased-key checks), #10740 (bloom_filter `add`/`contains`),
-#11869 (fixed_capacity_set core APIs), #10001 (plain CUDA atomics), #12385 (broadcast one slot
-index in cooperative `insert_and_find`), #12356 / #12357 / #12380 (set host `insert_if`,
-`contains_if`, key-range `for_each`), #12360 (multiply-high range reduction). Their reviews mostly
-reinforce sections 1-13; the new rules are below.
-
-- **One code path.** A special case for a narrower hash or index type needs a measured win in the
-  real find/insert kernels, not a standalone SASS count; a one-instruction saving in an isolated
-  helper does not justify a second branch. (#12360)
-- **No 32-bit sizes.** Every cuco container fixes the extent to `cuda::std::size_t`, so take and
-  return `size_t` and require an unsigned hash. If a public entry point such as `make_iterator`
-  can receive another index type, `static_assert` on it instead of supporting it. (#12360)
-- **Unit-test surface follows the code.** Do not reimplement the library function (or mirror the
-  header's own narrowing rule) in the test oracle: that compares the implementation with itself.
-  A few fixed expected values pin a one-line mapping; do not sweep patterns x hash types x bounds
-  x index types for it. Reuse coverage that exists elsewhere (`cuda::mul_hi` has its own test).
-  (#12360)
-- **A single-caller helper does not get its own header**; fold it into the module that uses it.
-  (#12360, #11449)
-- **Prefer `::cuda::std::__num_bits_v`** over `numeric_limits<T>::digits` or `sizeof * CHAR_BIT`
-  locals; avoid chains of nested `static_cast`s (use brace-init for the widening step). (#12360)
-- **Overloaded `break` in nested loops/switches** in probing code is a known hazard; when a
-  `break` must exit two levels, restructure or accept `goto` rather than add flag variables.
-  (#11975)
-- **Plain atomics correctness:** document why a sub-word CAS cannot lose a neighbouring update
-  (the swap compares the whole word and retries), and which scopes are mapped to which
-  intrinsics (cluster scope maps to device scope). (#10001)
-- **Migrating an API means migrating its tests.** If the old cuco tests exercise the migrated
-  `add`/`contains`/`clear` paths (bulk-vs-ref equivalence, variable CG, layout equivalence),
-  port them or state why not; Arrow-format compatibility tests belong in the consumer's suite
-  unless the format is a guaranteed contract. (#10740)
-- **Do not drop diagnostic metrics when porting benchmarks** (L2 hit rate, DRAM throughput for
-  bloom_filter): keep them behind an option. (#10740)
-- **Dead checks after a rewrite:** remove `static_assert`s on an API the implementation no longer
-  uses (`atomic_ref::fetch_or`), and tighten word-type checks to what the original required.
-  (#10740)
-- **Tuning modes are user-facing:** put template-argument enums such as
-  `conditional_add_mode` / `early_exit_contains_mode` in a public header, grouped in a struct or
-  namespace so generic names do not collide with a future tuning refactor. (#10740)
-- **Do not mark custom-hasher paths `noexcept` unconditionally**, including `ref()` and
-  `hash_function()` wrappers; a user hasher may throw on copy or invocation. Conversely, device
-  members that only call noexcept policy functions, shuffles and atomics should be `noexcept`.
-  Do not mark `constexpr` an overload that performs `reinterpret_cast`. (#10740)
-- **Public Doxygen references the type**, not an internal header path. (#10740)
-- **Deduce constexpr block size from the thread-hierarchy object** instead of passing it to the
-  kernel separately. (#10740)
-- **Clang-tidy sweeps** (`readability-*`, `misc-include-cleaner`; #12353, #12408, #12438, #12442,
-  #12443) touch cuco headers mechanically; review only the cuco hunks for behaviour changes.
