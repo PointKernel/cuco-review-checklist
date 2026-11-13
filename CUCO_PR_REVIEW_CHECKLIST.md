@@ -2,7 +2,7 @@
 
 Last updated: **2026-11-13**.
 
-Source: review history of about 60 cuco-related NVIDIA/cccl PRs (#4898 ... #12442): hashers,
+Source: review history of cuco-related NVIDIA/cccl PRs: hashers,
 HyperLogLog, bloom_filter, fixed_capacity_map/set, atomics, infra. Items marked **(recurring)**
 arose in two or more PRs. Bot/CI noise is excluded; an unresolved bot finding is not an accepted
 rule. Where a convention changed, the current rule is stated.

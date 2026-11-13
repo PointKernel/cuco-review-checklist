@@ -1,7 +1,7 @@
 # cuco PR review checklist
 
 A checklist of review rules for `cudax::cuco` (cuCollections inside NVIDIA/cccl), distilled from
-the public review history of about 60 cuco-related NVIDIA/cccl pull requests.
+the public review history of cuco-related NVIDIA/cccl pull requests.
 
 It is written mainly for AI agents to self-review a cuco change before it is opened for human
 review. Humans can use it too, but it is terse and organised for lookup, not for reading end to end.
