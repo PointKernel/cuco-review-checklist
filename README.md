@@ -13,8 +13,8 @@ review. Humans can use it too, but it is terse and organised for lookup, not for
   CMake, and so on).
 - Treat each item as a prompt to verify in the diff, not as an automatic comment. Check the claim
   against the code first and report only problems you have confirmed.
-- Items marked **(recurring)** came up in two or more PRs. Section 14 lists open questions that
-  review never settled; do not cite them as agreed practice.
+- Items marked **(recurring)** came up in two or more PRs. Items that say a review thread was
+  unresolved or unadjudicated are open questions; do not cite them as agreed practice.
 
 ## Caveats
 

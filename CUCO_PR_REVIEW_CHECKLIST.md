@@ -165,6 +165,9 @@ rule. Where a convention changed, the current rule is stated.
 - `_CCCL_ASSERT` preconditions with both lower and upper bounds (`cuda::in_range`); device code
   that can't throw must at least assert (it traps, not UB). Add it the first time, not the third.
   (#6666 x3)
+- Audit the exception guarantee after every ownership change: #11391's rehash swaps storage
+  before constructing a potentially throwing `ref()`, with no rollback. Moving `ref()` before the
+  swap would capture the old slots, so that alone is not a fix. (#11391)
 - Non-owning `*_ref` constructors validate caller-provided storage and throw instead of rounding
   down silently; test undersized and rounded-down inputs. (#10220)
 - Overflow: `cuda::add_overflow` / `cuda::mul_overflow`, and check *after* `next_prime` enlarges
@@ -189,7 +192,7 @@ rule. Where a convention changed, the current rule is stated.
 - For stream-bound setup, obtain attributes from that stream's device, e.g.
   `cuda::device_attributes::max_shared_memory_per_block_optin(stream.device())`.
   Audit context-sensitive setup before launch as well as the launch itself; #11391's context
-  guard and restoration test landed, while the specific review thread remains unresolved (see §14).
+  guard and restoration test landed (a review thread on it stayed unresolved, so do not read it as an API recommendation).
   ([#11391 human review](https://github.com/NVIDIA/cccl/pull/11391#discussion_r4149918862))
 - **(recurring)** All temporaries (counters, temp storage) through the given MR via
   `cuda::device_buffer` / `cuda::buffer`, constructed directly with the initial value
@@ -264,7 +267,9 @@ rule. Where a convention changed, the current rule is stated.
   the mapped value. Choose the wait from the actual insertion path: a packable type with
   insufficient runtime alignment still uses the key-first fallback. Check both existing-key
   and lost-CAS paths, scalar and cooperative variants. The merged helper handles this runtime
-  decision; a separate bot memory-order concern remains unadjudicated (see §14).
+  decision. Whenever a payload is published to other threads, ask what orders it against the
+  readiness flag: the merged code keeps relaxed payload operations, and a bot's request for
+  release/acquire was never adjudicated.
   ([#11340 merged implementation](https://github.com/NVIDIA/cccl/pull/11340/files))
 - When `insert_or_assign` supports erased slots, search past tombstones for an existing key
   before claiming reusable storage; otherwise assignment can create a duplicate. Retry the
@@ -505,16 +510,3 @@ rule. Where a convention changed, the current rule is stated.
 - PR description: CCCL template's two-item checklist only. Draft PRs need `/ok to test <sha>` from a
   maintainer. Optional RAPIDS-matrix failures are usually upstream skew: confirm and say so, don't
   mask them in cuco code. Flag known conflicts with concurrent PRs on the same files. (#10025, #10688)
-
-## 14. Open items worth checking
-
-Not settled by review in NVIDIA/cccl; check them rather than cite them as agreed practice.
-
-- **Exception safety after ownership changes:** #11391 swaps storage before constructing a
-  potentially throwing `ref()`, with no rollback. Audit the guarantee after every ownership
-  change. Moving `ref()` before the swap would capture the old slots, so that alone is not a fix.
-- **Payload publication ordering:** #11340 keeps relaxed payload operations although a bot asked
-  for release/acquire. Whenever a payload is published to other threads, ask what orders it
-  against the readiness flag.
-- **Context guards:** #11391 restores a null caller context in the HLL implementation and tests
-  it across iterator types and precisions. Treat it as a landed pattern, not an API recommendation.
